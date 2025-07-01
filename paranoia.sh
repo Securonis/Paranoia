@@ -2,7 +2,7 @@
 
 # SECURONIS LINUX - PARANOIA MODE 
 # This script enables extreme security measures by blocking all external connections,
-# raising kernel security levels, and cutting network connections.
+# raising network security levels, and cutting network connections.
 
 # Check if running as root
 if [ "$(id -u)" -ne 0 ]; then
@@ -155,12 +155,15 @@ EOF
 
     # Block all network modules
     echo "Blocking network-related kernel modules..."
-    for module in $(lsmod | grep -E "^(bluetooth|wifi|wireless|wlan|net)" | awk '{print $1}'); do
-        rmmod $module 2>/dev/null
-        echo "blacklist $module" >> /etc/modprobe.d/securonis-blacklist.conf
+    for module in bluetooth btusb cfg80211 mac80211 rfcomm bnep iwlwifi ath9k brcmfmac brcmsmac b43 rtl8187 rtl8192cu rtl8723be wl rsi_91x; do
+        if lsmod | grep -q "^$module"; then
+            rmmod $module 2>/dev/null
+            echo "blacklist $module" >> /etc/modprobe.d/securonis-blacklist.conf
+            echo "Removed and blacklisted module: $module"
+        fi
     done
 
-    # Create module blacklist for wireless and network devices
+    # Create static module blacklist for wireless and network devices
     cat > /etc/modprobe.d/securonis-network-blacklist.conf << EOF
 blacklist bluetooth
 blacklist btusb
@@ -182,9 +185,56 @@ EOF
 
     # Kill all network-related processes with extreme prejudice
     echo "Terminating ALL network-related processes..."
-    for proc in firefox chromium chrome brave opera vivaldi thunderbird evolution mutt wget curl aria2c transmission-* deluge torrent ssh telnet ftp nc netcat ncat nmap wireshark tcpdump; do
+    for proc in firefox chromium chrome brave opera vivaldi thunderbird evolution mutt wget curl aria2c ssh telnet ftp nc netcat ncat nmap wireshark tcpdump; do
         pkill -9 $proc 2>/dev/null
     done
+    
+    # Kill specific processes that need full path matching
+    pkill -9 -f "transmission-" 2>/dev/null
+    pkill -9 -f "deluge" 2>/dev/null
+    pkill -9 -f "torrent" 2>/dev/null
+    
+    # Kill VPN related processes
+    for vpn in openvpn wireguard wg-quick strongswan; do
+        pkill -9 -f $vpn 2>/dev/null
+        systemctl stop $vpn 2>/dev/null
+        systemctl mask $vpn 2>/dev/null
+    done
+
+    # Create fail-safe script
+    echo "Creating emergency fail-safe script..."
+    cat > /usr/local/bin/paranoia-emergency << 'EOF'
+#!/bin/bash
+echo "Emergency network restore script"
+echo "Use this if normal disable mode fails"
+echo "This will restore basic network connectivity"
+
+# Reset iptables policies to ACCEPT
+iptables -P INPUT ACCEPT
+iptables -P OUTPUT ACCEPT
+iptables -P FORWARD ACCEPT
+ip6tables -P INPUT ACCEPT
+ip6tables -P OUTPUT ACCEPT
+ip6tables -P FORWARD ACCEPT
+
+# Enable main network interface
+for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -v 'lo'); do
+    ip link set $iface up
+    if command -v dhclient >/dev/null 2>&1; then
+        dhclient $iface &
+    fi
+done
+
+# Remove blacklist files
+rm -f /etc/modprobe.d/securonis-*.conf
+
+echo "Basic network connectivity should be restored."
+echo "Please reboot your system for full restoration."
+EOF
+
+    chmod +x /usr/local/bin/paranoia-emergency
+    echo "Created emergency restore script at: /usr/local/bin/paranoia-emergency"
+    echo "Use this script if normal disable mode fails to restore network connectivity."
     
     # Create paranoia mode status file
     touch /etc/securonis/paranoia_mode_enabled
@@ -192,7 +242,7 @@ EOF
     echo
     echo "Paranoia Mode successfully enabled."
     echo "Your system is now isolated from all networks and external connections."
-    echo "Kernel security has been maximized."
+    echo "Networksecurity has been maximized."
     echo
     read -p "Press Enter to return to the menu..."
 }
@@ -282,6 +332,10 @@ disable_paranoia_mode() {
         rm -rf /etc/securonis/backup
     fi
     
+    # Remove fail-safe script
+    echo "Removing emergency fail-safe script..."
+    rm -f /usr/local/bin/paranoia-emergency
+    
     # Remove paranoia mode status file and directory
     rm -f /etc/securonis/paranoia_mode_enabled
     [ -d /etc/securonis ] && rmdir /etc/securonis 2>/dev/null
@@ -290,7 +344,7 @@ disable_paranoia_mode() {
     echo "Paranoia Mode successfully disabled."
     echo "Your system has been returned to normal operation."
     echo "Network connections have been restored."
-    echo "All security settings have been reset to their original state."
+    echo "All network security settings have been reset to their original state."
     echo
     read -p "Press Enter to return to the menu..."
 }
