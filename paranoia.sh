@@ -63,115 +63,128 @@ enable_paranoia_mode() {
     # Block all incoming and outgoing connections
     echo "Setting up strict firewall rules..."
     
-    # Flush existing rules
+    # Flush existing rules and delete all custom chains
     iptables -F
     iptables -X
     ip6tables -F
     ip6tables -X
     
-    # Set default policies to DROP
-    iptables -P INPUT DROP
-    iptables -P FORWARD DROP
-    iptables -P OUTPUT DROP
-    ip6tables -P INPUT DROP
-    ip6tables -P FORWARD DROP
-    ip6tables -P OUTPUT DROP
+    # Flush nat and mangle tables
+    iptables -t nat -F
+    iptables -t mangle -F
+    ip6tables -t nat -F
+    ip6tables -t mangle -F
     
-    # Allow loopback
+    # Set default policies to DROP for all chains in all tables
+    for table in filter nat mangle raw security; do
+        iptables -t $table -P INPUT DROP
+        iptables -t $table -P FORWARD DROP
+        iptables -t $table -P OUTPUT DROP
+        ip6tables -t $table -P INPUT DROP
+        ip6tables -t $table -P FORWARD DROP
+        ip6tables -t $table -P OUTPUT DROP
+    done
+
+    # Block all ports explicitly
+    iptables -A INPUT -j DROP
+    iptables -A OUTPUT -j DROP
+    iptables -A FORWARD -j DROP
+    ip6tables -A INPUT -j DROP
+    ip6tables -A OUTPUT -j DROP
+    ip6tables -A FORWARD -j DROP
+    
+    # Block specific high-risk ports explicitly
+    for port in 21 22 23 25 53 80 443 3389 8080; do
+        iptables -A INPUT -p tcp --dport $port -j DROP
+        iptables -A INPUT -p udp --dport $port -j DROP
+        iptables -A OUTPUT -p tcp --dport $port -j DROP
+        iptables -A OUTPUT -p udp --dport $port -j DROP
+    done
+
+    # Only allow localhost connections
     iptables -A INPUT -i lo -j ACCEPT
     iptables -A OUTPUT -o lo -j ACCEPT
     ip6tables -A INPUT -i lo -j ACCEPT
     ip6tables -A OUTPUT -o lo -j ACCEPT
     
-    echo "Firewall configured to block all external connections."
+    # Block all other loopback traffic
+    iptables -A INPUT ! -i lo -s 127.0.0.0/8 -j DROP
+    iptables -A OUTPUT ! -o lo -d 127.0.0.0/8 -j DROP
+
+    echo "Enhanced firewall configured to block ALL external connections."
     
-    # Disable network interfaces
+    # Disable network interfaces and set them to down state
     echo "Disabling all network interfaces..."
     for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -v 'lo'); do
+        # Disable interface
         ip link set $iface down
-        echo "Disabled interface: $iface"
+        # Set interface to promisc off
+        ip link set $iface promisc off
+        # Flush interface addresses
+        ip addr flush dev $iface
+        echo "Disabled and cleared interface: $iface"
     done
-    
-    # Harden kernel parameters
-    echo "Hardening kernel security parameters..."
-    
-    # Create backup of sysctl.conf
-    cp /etc/sysctl.conf /etc/securonis/backup/sysctl.conf.backup
-    
-    # Apply kernel hardening
-    cat > /etc/sysctl.d/99-securonis-paranoia.conf << EOF
-# Kernel hardening parameters
 
-# Restrict dmesg access
-kernel.dmesg_restrict = 1
+    # Additional kernel hardening parameters
+    cat >> /etc/sysctl.d/99-securonis-paranoia.conf << EOF
 
-# Restrict kernel pointers
-kernel.kptr_restrict = 2
+# Additional network hardening
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.all.secure_redirects = 0
+net.ipv4.conf.default.secure_redirects = 0
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.default.accept_source_route = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+net.ipv4.conf.all.log_martians = 1
+net.ipv4.conf.default.log_martians = 1
+net.ipv4.tcp_fin_timeout = 10
+net.ipv4.tcp_keepalive_time = 300
+net.ipv4.conf.all.arp_ignore = 1
+net.ipv4.conf.all.arp_announce = 2
+net.ipv4.tcp_rfc1337 = 1
+net.ipv4.tcp_synack_retries = 2
 
-# Disable unprivileged user namespaces
-kernel.unprivileged_userns_clone = 0
-
-# Disable SysRq key
-kernel.sysrq = 0
-
-# Protect against core dumps
-fs.suid_dumpable = 0
-
-# Restrict ptrace scope
-kernel.yama.ptrace_scope = 3
-
-# Disable IPv4 forwarding
-net.ipv4.ip_forward = 0
-
-# Disable IPv6
-net.ipv6.conf.all.disable_ipv6 = 1
-net.ipv6.conf.default.disable_ipv6 = 1
-net.ipv6.conf.lo.disable_ipv6 = 1
-
-# Protect against IP spoofing
-net.ipv4.conf.all.rp_filter = 1
-net.ipv4.conf.default.rp_filter = 1
-
-# Ignore ICMP requests
-net.ipv4.icmp_echo_ignore_all = 1
-net.ipv6.icmp.echo_ignore_all = 1
-
-# Ignore broadcast requests
-net.ipv4.icmp_echo_ignore_broadcasts = 1
-
-# Disable TCP timestamps
-net.ipv4.tcp_timestamps = 0
-
-# Enable TCP SYN cookies
-net.ipv4.tcp_syncookies = 1
-
-# Disable SACK
-net.ipv4.tcp_sack = 0
-
-# Disable TCP window scaling
-net.ipv4.tcp_window_scaling = 0
+# Block uncommon network protocols
+net.ipv4.conf.all.bootp_relay = 0
+net.ipv4.conf.all.proxy_arp = 0
+net.ipv4.conf.all.arp_accept = 0
+net.ipv4.conf.all.arp_notify = 0
 EOF
-    
-    # Apply sysctl changes
-    sysctl -p /etc/sysctl.d/99-securonis-paranoia.conf
-    
-    # Disable potentially vulnerable services
-    echo "Disabling potentially vulnerable services..."
-    for service in avahi-daemon cups bluetooth NetworkManager wpa_supplicant dhcpcd dhclient; do
-        systemctl stop $service 2>/dev/null
-        systemctl mask $service 2>/dev/null
-        echo "Stopped and masked service: $service"
+
+    # Block all network modules
+    echo "Blocking network-related kernel modules..."
+    for module in $(lsmod | grep -E "^(bluetooth|wifi|wireless|wlan|net)" | awk '{print $1}'); do
+        rmmod $module 2>/dev/null
+        echo "blacklist $module" >> /etc/modprobe.d/securonis-blacklist.conf
     done
-    
-    # Kill all network-related processes
-    echo "Terminating network-related processes..."
-    pkill -9 firefox 2>/dev/null
-    pkill -9 chrome 2>/dev/null
-    pkill -9 chromium 2>/dev/null
-    pkill -9 thunderbird 2>/dev/null
-    pkill -9 transmission 2>/dev/null
-    pkill -9 wget 2>/dev/null
-    pkill -9 curl 2>/dev/null
+
+    # Create module blacklist for wireless and network devices
+    cat > /etc/modprobe.d/securonis-network-blacklist.conf << EOF
+blacklist bluetooth
+blacklist btusb
+blacklist cfg80211
+blacklist mac80211
+blacklist rfcomm
+blacklist bnep
+blacklist rsi_91x
+blacklist rtl8187
+blacklist rtl8192cu
+blacklist rtl8723be
+blacklist iwlwifi
+blacklist ath9k
+blacklist brcmfmac
+blacklist brcmsmac
+blacklist b43
+blacklist wl
+EOF
+
+    # Kill all network-related processes with extreme prejudice
+    echo "Terminating ALL network-related processes..."
+    for proc in firefox chromium chrome brave opera vivaldi thunderbird evolution mutt wget curl aria2c transmission-* deluge torrent ssh telnet ftp nc netcat ncat nmap wireshark tcpdump; do
+        pkill -9 $proc 2>/dev/null
+    done
     
     # Create paranoia mode status file
     touch /etc/securonis/paranoia_mode_enabled
@@ -207,11 +220,29 @@ disable_paranoia_mode() {
         ip6tables-restore < /etc/securonis/backup/ip6tables-backup.rules
         echo "IPv6 firewall rules restored."
     fi
+
+    # Reset all firewall tables to ACCEPT
+    echo "Resetting all firewall tables to default ACCEPT policy..."
+    for table in filter nat mangle raw security; do
+        iptables -t $table -P INPUT ACCEPT
+        iptables -t $table -P FORWARD ACCEPT
+        iptables -t $table -P OUTPUT ACCEPT
+        ip6tables -t $table -P INPUT ACCEPT
+        ip6tables -t $table -P FORWARD ACCEPT
+        ip6tables -t $table -P OUTPUT ACCEPT
+    done
     
     # Re-enable network interfaces
     echo "Re-enabling network interfaces..."
     for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -v 'lo'); do
+        # Enable interface
         ip link set $iface up
+        # Disable promisc mode if it was enabled
+        ip link set $iface promisc off
+        # Try to get IP via DHCP if dhclient is available
+        if command -v dhclient >/dev/null 2>&1; then
+            dhclient $iface &
+        fi
         echo "Enabled interface: $iface"
     done
     
@@ -224,21 +255,42 @@ disable_paranoia_mode() {
         echo "Kernel parameters restored."
     fi
     
-    # Re-enable services
+    # Remove network module blacklists
+    echo "Removing network module blacklists..."
+    rm -f /etc/modprobe.d/securonis-blacklist.conf
+    rm -f /etc/modprobe.d/securonis-network-blacklist.conf
+    
+    # Reload modules that were blacklisted
+    echo "Reloading network modules..."
+    modprobe bluetooth 2>/dev/null
+    modprobe btusb 2>/dev/null
+    modprobe cfg80211 2>/dev/null
+    modprobe mac80211 2>/dev/null
+    
+    # Re-enable system services
     echo "Re-enabling system services..."
     for service in NetworkManager wpa_supplicant dhcpcd avahi-daemon cups bluetooth; do
         systemctl unmask $service 2>/dev/null
+        systemctl enable $service 2>/dev/null
         systemctl start $service 2>/dev/null
         echo "Started service: $service"
     done
     
-    # Remove paranoia mode status file
+    # Clean up backup files
+    echo "Cleaning up backup files..."
+    if [ -d /etc/securonis/backup ]; then
+        rm -rf /etc/securonis/backup
+    fi
+    
+    # Remove paranoia mode status file and directory
     rm -f /etc/securonis/paranoia_mode_enabled
+    [ -d /etc/securonis ] && rmdir /etc/securonis 2>/dev/null
     
     echo
     echo "Paranoia Mode successfully disabled."
     echo "Your system has been returned to normal operation."
     echo "Network connections have been restored."
+    echo "All security settings have been reset to their original state."
     echo
     read -p "Press Enter to return to the menu..."
 }
