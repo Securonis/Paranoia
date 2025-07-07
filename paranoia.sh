@@ -124,16 +124,11 @@ enable_paranoia_mode() {
 
     echo "Enhanced firewall configured to block ALL external connections."
     
-    # Disable network interfaces and set them to down state
+    # Disable network interfaces
     echo "Disabling all network interfaces..."
     for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -v 'lo'); do
-        # Disable interface
         ip link set $iface down
-        # Set interface to promisc off
-        ip link set $iface promisc off
-        # Flush interface addresses
-        ip addr flush dev $iface
-        echo "Disabled and cleared interface: $iface"
+        echo "Disabled interface: $iface"
     done
 
     # Additional kernel hardening parameters
@@ -194,16 +189,17 @@ blacklist b43
 blacklist wl
 EOF
 
-    # Kill all network-related processes with extreme prejudice
-    echo "Terminating ALL network-related processes..."
-    for proc in firefox chromium chrome brave opera vivaldi thunderbird evolution mutt wget curl aria2c ssh telnet ftp nc netcat ncat nmap wireshark tcpdump; do
-        pkill -9 $proc 2>/dev/null
-    done
+    # Kill only essential network-related processes
+    echo "Terminating network-related processes..."
+    pkill -9 firefox 2>/dev/null
+    pkill -9 chrome 2>/dev/null
+    pkill -9 chromium 2>/dev/null
+    pkill -9 thunderbird 2>/dev/null
+    pkill -9 transmission 2>/dev/null
+    pkill -9 wget 2>/dev/null
+    pkill -9 curl 2>/dev/null
     
-    # Kill specific processes that need full path matching
-    pkill -9 -f "transmission-" 2>/dev/null
-    pkill -9 -f "deluge" 2>/dev/null
-    pkill -9 -f "torrent" 2>/dev/null
+    # We're not modifying the desktop environment to avoid issues
     
     # Kill VPN related processes
     for vpn in openvpn wireguard wg-quick strongswan; do
@@ -308,14 +304,7 @@ disable_paranoia_mode() {
     # Re-enable network interfaces
     echo "Re-enabling network interfaces..."
     for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -v 'lo'); do
-        # Enable interface
         ip link set $iface up
-        # Disable promisc mode if it was enabled
-        ip link set $iface promisc off
-        # Try to get IP via DHCP if dhclient is available
-        if command -v dhclient >/dev/null 2>&1; then
-            dhclient $iface &
-        fi
         echo "Enabled interface: $iface"
     done
     
@@ -349,6 +338,8 @@ disable_paranoia_mode() {
         echo "Started service: $service"
     done
     
+    # We're not modifying the desktop environment to avoid issues
+    
     # Clean up backup files
     echo "Cleaning up backup files..."
     if [ -d /etc/securonis/backup ]; then
@@ -359,9 +350,9 @@ disable_paranoia_mode() {
     echo "Removing emergency fail-safe script..."
     rm -f /usr/local/bin/paranoia-emergency
     
-    # Remove paranoia mode status file and directory
+    # Remove only the paranoia mode status file, keep the directory
     rm -f /etc/securonis/paranoia_mode_enabled
-    [ -d /etc/securonis ] && rmdir /etc/securonis 2>/dev/null
+    # Keep the /etc/securonis directory for future use
     
     echo
     echo "Paranoia Mode successfully disabled."
