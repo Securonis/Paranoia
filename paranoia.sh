@@ -75,15 +75,26 @@ enable_paranoia_mode() {
     ip6tables -t nat -F
     ip6tables -t mangle -F
     
-    # Set default policies to DROP for all chains in all tables
-    for table in filter nat mangle raw security; do
-        iptables -t $table -P INPUT DROP
-        iptables -t $table -P FORWARD DROP
-        iptables -t $table -P OUTPUT DROP
-        ip6tables -t $table -P INPUT DROP
-        ip6tables -t $table -P FORWARD DROP
-        ip6tables -t $table -P OUTPUT DROP
+    # Set default policies to DROP for all chains in standard tables
+    for table in filter nat mangle raw; do
+        if [ "$table" = "filter" ]; then
+            # Only filter table has INPUT, FORWARD, OUTPUT chains
+            iptables -t $table -P INPUT DROP 2>/dev/null || true
+            iptables -t $table -P FORWARD DROP 2>/dev/null || true
+            iptables -t $table -P OUTPUT DROP 2>/dev/null || true
+            ip6tables -t $table -P INPUT DROP 2>/dev/null || true
+            ip6tables -t $table -P FORWARD DROP 2>/dev/null || true
+            ip6tables -t $table -P OUTPUT DROP 2>/dev/null || true
+        fi
     done
+    
+    # Set default filter table policies explicitly
+    iptables -P INPUT DROP
+    iptables -P FORWARD DROP
+    iptables -P OUTPUT DROP
+    ip6tables -P INPUT DROP 2>/dev/null || true
+    ip6tables -P FORWARD DROP 2>/dev/null || true
+    ip6tables -P OUTPUT DROP 2>/dev/null || true
 
     # Block all ports explicitly
     iptables -A INPUT -j DROP
@@ -237,6 +248,7 @@ EOF
     echo "Use this script if normal disable mode fails to restore network connectivity."
     
     # Create paranoia mode status file
+    mkdir -p /etc/securonis
     touch /etc/securonis/paranoia_mode_enabled
     
     echo
@@ -273,14 +285,25 @@ disable_paranoia_mode() {
 
     # Reset all firewall tables to ACCEPT
     echo "Resetting all firewall tables to default ACCEPT policy..."
-    for table in filter nat mangle raw security; do
-        iptables -t $table -P INPUT ACCEPT
-        iptables -t $table -P FORWARD ACCEPT
-        iptables -t $table -P OUTPUT ACCEPT
-        ip6tables -t $table -P INPUT ACCEPT
-        ip6tables -t $table -P FORWARD ACCEPT
-        ip6tables -t $table -P OUTPUT ACCEPT
+    for table in filter nat mangle raw; do
+        if [ "$table" = "filter" ]; then
+            # Only filter table has INPUT, FORWARD, OUTPUT chains
+            iptables -t $table -P INPUT ACCEPT 2>/dev/null || true
+            iptables -t $table -P FORWARD ACCEPT 2>/dev/null || true
+            iptables -t $table -P OUTPUT ACCEPT 2>/dev/null || true
+            ip6tables -t $table -P INPUT ACCEPT 2>/dev/null || true
+            ip6tables -t $table -P FORWARD ACCEPT 2>/dev/null || true
+            ip6tables -t $table -P OUTPUT ACCEPT 2>/dev/null || true
+        fi
     done
+    
+    # Set default filter table policies explicitly
+    iptables -P INPUT ACCEPT
+    iptables -P FORWARD ACCEPT
+    iptables -P OUTPUT ACCEPT
+    ip6tables -P INPUT ACCEPT 2>/dev/null || true
+    ip6tables -P FORWARD ACCEPT 2>/dev/null || true
+    ip6tables -P OUTPUT ACCEPT 2>/dev/null || true
     
     # Re-enable network interfaces
     echo "Re-enabling network interfaces..."
